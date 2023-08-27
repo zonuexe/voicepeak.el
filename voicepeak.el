@@ -55,7 +55,9 @@
   :safe (lambda (v) (or (stringp v) (null v)))
   :group 'voicepeak)
 
+(defvar voicepeak--running-process nil)
 (defvar voicepeak--temp-files '())
+(defvar voicepeak--queue '())
 
 (defun voicepeak-list-narrator ()
   "Return a list of VOICEPEAK narrators."
@@ -71,30 +73,55 @@
              unless (string-prefix-p "iconv_open" line)
              collect line)))
 
+(defun voicepeak--dispatch ()
+  "Dispatch VOICEPEAK asynchronous process."
+  (message "[voicepeak] called voicepeak-dispatch, running-process: %s, queue: %s"
+           voicepeak--running-process voicepeak--queue)
+  (unless (and voicepeak--running-process (null voicepeak--queue))
+    (if-let* ((queue (pop voicepeak--queue))
+              (cmd (mapconcat #'shell-quote-argument (voicepeak--build-cmd queue) " "))
+              (temp-file (plist-get queue :temp)))
+        (progn
+          (setq voicepeak--running-process t)
+          (async-start
+           (lambda ()
+             (call-process-shell-command cmd nil nil nil))
+           (lambda (result)
+             (setq voicepeak--running-process nil)
+             (mpv-play temp-file)
+             (run-with-timer 10 nil #'voicepeak--dispatch))))
+      (user-error "[voicepeak] Error dispatch: queue %s" voicepeak--queue))))
+
+(defun voicepeak--build-cmd (plist)
+  "Build the VOICEPEAK command line arguments by PLIST."
+  (append (list voicepeak-executable)
+          (when-let (narrator (plist-get plist :narrator)) (list  "-n" narrator))
+          (list "-s" (plist-get plist :message)
+                "-o" (plist-get plist :temp))))
+
+(cl-defun voicepeak--enqueue (message temp-file &key narrator)
+  "Enqueue MESSAGE, NARRATOR and TEMP-FILE for dispatch VOICEPEAK."
+  (setq voicepeak--queue (nconc voicepeak--queue
+                       (list (list :narrator narrator :message message :temp temp-file))))
+  (message "[voicepeak] enqueued %s" voicepeak--queue))
+
+;;;###autoload
 (defun voicepeak-say (message)
   "Speak MESSAGE by VOICEPEAK."
   (interactive (list (if (region-active-p)
                          (buffer-substring-no-properties (region-beginning) (region-end))
                        (read-string "Input message: "))))
-  (let* ((temp (voicepeak--create-temp))
-         (args (append
-                (list voicepeak-executable)
-                (when voicepeak-narrator
-                  (list  "-n" voicepeak-narrator))
-                (list "-s" message
-                      "-o" temp)))
-         (cmd (mapconcat #'shell-quote-argument args " ")))
-    (async-start
-     (lambda ()
-       (call-process-shell-command cmd nil nil nil))
-     (lambda (result)
-       (mpv-play temp)))))
+  (let ((temp (voicepeak--create-temp message voicepeak-narrator)))
+    (voicepeak--enqueue message temp :narrator voicepeak-narrator)
+    (voicepeak--dispatch)))
 
-(defun voicepeak--create-temp ()
-  "Create new temp file for VOICEPEAK."
-  (let ((temp (make-temp-file "voicepeak-" nil ".wav")))
+(defun voicepeak--create-temp (message narrator)
+  "Create new temp file for VOICEPEAK by MESSAGE and NARRATOR."
+  (let* ((prefix (format "voicepeak-%s-%s" (or narrator "default") (md5 message)))
+         (temp (make-temp-file prefix nil ".wav"))
+         (key (list :message message :narrator narrator)))
     (prog1 temp
-      (add-to-list 'voicepeak--temp-files temp))))
+      (add-to-list 'voicepeak--temp-files (cons key temp)))))
 
 (provide 'voicepeak)
 ;;; voicepeak.el ends here
