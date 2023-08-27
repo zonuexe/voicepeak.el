@@ -79,23 +79,23 @@
            voicepeak--running-process voicepeak--queue)
   (unless (and voicepeak--running-process (null voicepeak--queue))
     (if-let* ((queue (pop voicepeak--queue))
-              (cmd (mapconcat #'shell-quote-argument (voicepeak--build-cmd queue) " "))
               (temp-file (plist-get queue :temp)))
         (progn
           (setq voicepeak--running-process t)
-          (async-start
-           (lambda ()
-             (call-process-shell-command cmd nil nil nil))
+          (apply
+           #'async-start-process
+           "voicepeak"
+           voicepeak-executable
            (lambda (result)
              (setq voicepeak--running-process nil)
              (mpv-play temp-file)
-             (run-with-timer 10 nil #'voicepeak--dispatch))))
+             (run-with-timer 10 nil #'voicepeak--dispatch))
+           (voicepeak--build-cmd queue)))
       (user-error "[voicepeak] Error dispatch: queue %s" voicepeak--queue))))
 
 (defun voicepeak--build-cmd (plist)
   "Build the VOICEPEAK command line arguments by PLIST."
-  (append (list voicepeak-executable)
-          (when-let (narrator (plist-get plist :narrator)) (list  "-n" narrator))
+  (append (when-let (narrator (plist-get plist :narrator)) (list  "-n" narrator))
           (list "-s" (plist-get plist :message)
                 "-o" (plist-get plist :temp))))
 
